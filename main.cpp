@@ -1,15 +1,18 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
+#include </opt/homebrew/Cellar/boost/1.88.0/include/boost/math/special_functions/lambert_w.hpp>
 
 #include "TAxis.h"
 #include "TCanvas.h"
 #include "TError.h"
 #include "TF1.h"
 #include "TGraph.h"
+#include "TLatex.h"
 #include "TPaveLabel.h"
 #include "TPaveStats.h"
 #include "TStyle.h"
@@ -22,35 +25,22 @@ const double G = 1.00;
 const double rs = (2.00 * G * M)/pow(c, 2);
 const double rStarMax = 2000;
 const double cfl = 0.50;
-const double tolVal = 1e-10;
+const double tolVal = 1e-50;
 
 double conversionToNormal(double rStar) {
-    int maxIterations = 1000;
-    double r = rStar, rNew, guess1, guess2, rTerm, noneTerm, gFunction, gDerivative;
+    double L1, L2, arg = exp(rStar/rs - 1), W;
 
-    rTerm = rs - (2 * rStar) + pow(rs, 2);
-    noneTerm = pow(rs, 2) + (rs * rStar) + pow(rStar, 2) + pow(rs, 3);
-    guess1 = (rTerm + sqrt(4 * noneTerm))/2;
-    guess2 = (rTerm - sqrt(4 * noneTerm))/2;
-
-    if (guess1 > 0)
-        r = guess1;
-    else if (guess2 > 0)
-        r = guess2;
-
-    if (r <= rs)
-        r = rs + tolVal;
-
-    for (int i = 0; i < maxIterations; i++) {
-        gFunction = r + rs*log(abs(r-rs))-rStar;
-        gDerivative = 1 + rs/abs(r-rs);    
-        rNew = r - gFunction/gDerivative;
-        if (abs(rNew - r) < tolVal)
-            return rNew;
-        r = rNew;
+    if (rStar < -1000) {
+        return rs * (1 + exp(rStar/rs - 1));
     }
-    cout << "Solution did not converge." << endl;
-    return rNew;
+
+    else if (rStar > 1000) {
+        return r;
+    }
+    else
+        W = boost::math::lambert_w0(arg);
+
+    return rs + rs * W;
 }
 
 double finiteDifferenceForward(double space0, double space1, double space2, double drStar) {
@@ -78,6 +68,8 @@ void saveData(const vector<vector<double>>& psi, string details, double dt, doub
     string title_csv = "bin/data_" + to_string(timeSteps) + "_" + to_string(spaceSteps) + "_" + details + ".csv";
     ofstream file_txt(title_txt);
     ofstream file_csv(title_csv);
+    file_txt << scientific << setprecision(15);
+    file_csv << scientific << setprecision(15);
 
     for (int i = 0; i < psi.size(); i++) {
         timeStamp = i * dt;
@@ -95,18 +87,19 @@ void saveData(const vector<vector<double>>& psi, string details, double dt, doub
 
 void fileToMatrix(string filename, vector<vector<double>>& matrix, int rows, int columns) {
     char* end = nullptr;
-    int position;
+    int position = 0;
     string line, delimiter = ",";
     
     ifstream file(filename);
-    for (int i = 0; i < rows; i++) {
+    while (getline(file, line)) {
+        vector<double> row;
         position = 0;
-        getline(file, line);
         for (int j = 0; j < columns; j++) {
             position = line.find(delimiter);
-            matrix[i][j] = strtod(line.substr(0, position).c_str(), &end);
+            row.push_back(strtod(line.substr(0, position).c_str(), &end));
             line.erase(0, position + delimiter.length());
         }
+        matrix.push_back(row);
     }
 }
 
@@ -132,7 +125,7 @@ void solvePDE(vector<vector<double>>& psi, double dt, double drStar, int l) {
     vector<vector<double>> aux(psi.size(), vector<double>(psi[0].size(), 0.0));
     vector<double> k1(psi[0].size(), 0.00), k1d(psi[0].size(), 0.00), k2(psi[0].size(), 0.00), k2d(psi[0].size(), 0.00), k3(psi[0].size(), 0.00), k3d(psi[0].size(), 0.00), k4(psi[0].size(), 0.00), k4d(psi[0].size(), 0.00);
 
-    for (int i = 0; i < psi.size() - 1; ++i) {
+    for (int i = 0; i < psi.size() - 1; i++) {
         k1[0]  = dt * aux[i][0];
         k1d[0] = dt * finiteDifferenceForward(aux[i][0], aux[i][1], aux[i][2], drStar);
         k2[0]  = dt * (aux[i][0] + 0.5 * k1d[0]);
@@ -182,30 +175,28 @@ void convergenceTest(double drStarQuarter, string fileMain, string fileHalf, str
     gErrorIgnoreLevel = kError;
     int position = time/(cfl * drStarQuarter);
     double error1, error2;
-    vector<double> e1(columnsQuarter, 0.00), e2(columnsQuarter, 0.00), rStarVal(columnsQuarter, 0.00);
-    vector<vector<double>> psiMain(rows, vector<double> (columnsQuarter * 4, 0.00));
-    vector<vector<double>> psiHalf(rows, vector<double> (columnsQuarter * 2, 0.00));
-    vector<vector<double>> psiQuarter(rows, vector<double> (columnsQuarter, 0.00));
+    vector<double> e1, e2, rStarVal;
+    vector<vector<double>> psiMain, psiHalf, psiQuarter;
 
     fileToMatrix(fileMain, psiMain, rows, columnsQuarter * 4);
     fileToMatrix(fileHalf, psiHalf, rows, columnsQuarter * 2);
     fileToMatrix(fileQuarter, psiQuarter, rows, columnsQuarter);
 
-    for (int i = 0; i < columnsQuarter; i++) {
+    for (int i = 0; i < psiQuarter[0].size(); i++) {
         if (type == "normal") {
-            rStarVal[i] = -rStarMax + i * drStarQuarter;
+            rStarVal.push_back(-rStarMax + i * drStarQuarter);
             error1 = 4 * abs(psiMain[position][i*4] - psiHalf[position][i*2]);
             error2 = abs(psiHalf[position][i*2] - psiQuarter[position][i]);
-            e1[i] = error1;
-            e2[i] = error2;
+            e1.push_back(error1);
+            e2.push_back(error2);
         }
         else if (type == "log") {
             error1 = 4 * abs(psiMain[position][i*4] - psiHalf[position][i*2]);
             error2 = abs(psiHalf[position][i*2] - psiQuarter[position][i]);
             if (error1 > tolVal && error2 > tolVal) {
-                rStarVal[i] = -rStarMax + i * drStarQuarter;
-                e1[i] = log(4 * abs(psiMain[position][i*4] - psiHalf[position][i*2]));
-                e2[i] = log(abs(psiHalf[position][i*2] - psiQuarter[position][i]));
+                rStarVal.push_back(-rStarMax + i * drStarQuarter);
+                e1.push_back(log(4 * abs(psiMain[position][i*4] - psiHalf[position][i*2])));
+                e2.push_back(log(abs(psiHalf[position][i*2] - psiQuarter[position][i])));
             }
         }
     }
@@ -213,11 +204,11 @@ void convergenceTest(double drStarQuarter, string fileMain, string fileHalf, str
     string title = "Convergence Test at t = " + to_string(time);
     TCanvas* c = new TCanvas("c", "Canvas", 2500, 1500);
     c->SetGrid();
-    TGraph* g1 = new TGraph(columnsQuarter, rStarVal.data(), e1.data());
+    TGraph* g1 = new TGraph(rStarVal.size(), rStarVal.data(), e1.data());
     g1->SetTitle(title.c_str());
     if (type == "normal") {
         g1->GetXaxis()-> SetTitle("Space");
-        g1->GetYaxis()-> SetTitle("Errors");
+        g1->GetYaxis()-> SetTitle("|Errors|");
     }
     else if (type == "log") {
         g1->GetXaxis()-> SetTitle("Space");
@@ -225,17 +216,15 @@ void convergenceTest(double drStarQuarter, string fileMain, string fileHalf, str
     }
     g1->GetXaxis()-> SetDecimals(kTRUE);
     g1->GetYaxis()-> SetDecimals(kTRUE);
-    g1->SetMarkerColor(kRed);
-    g1->SetMarkerSize(0.8);
-    g1->SetMarkerStyle(8);
-    g1->Draw("AP");
-    TGraph* g2 = new TGraph(columnsQuarter, rStarVal.data(), e2.data());
-    g2->SetMarkerColor(kBlue);
-    g2->SetMarkerSize(0.8);
-    g2->SetMarkerStyle(8);
-    g2->Draw("P SAME");
+    g1->SetLineColor(kRed);
+    g1->SetLineWidth(5);
+    g1->Draw("AL");
+    TGraph* g2 = new TGraph(rStarVal.size(), rStarVal.data(), e2.data());
+    g2->SetLineColor(kBlue);
+    g2->SetLineWidth(3);
+    g2->Draw("L SAME");
 
-    string output = "convergenceTest/convergence_test_"  + type + ".png", command = "open " + output;
+    string output = "convergenceTest/convergence_test_"  + type + "_" + to_string(time) + ".png", command = "open " + output;
     c->SaveAs(output.c_str());
     delete g2;
     delete g1;
@@ -243,97 +232,125 @@ void convergenceTest(double drStarQuarter, string fileMain, string fileHalf, str
     system(command.c_str());
 }
 
-string dampedExponential(double peak) {
-    return "[0]*exp(-(x - " + to_string(peak) + ")/[1])*sin([2]*(x - " + to_string(peak) + ") + [3])";
+string dampedExponential(double peak, string option) {
+    if (option == "mode")
+        return "[0] + (x-[4])*[1] + log(abs(sin(([2] * (x-[4])) + [3])))";
+    else if (option == "modes")
+        return "[0] + (x-[4])*[1] + log(abs(sin(([2] * (x-[4])) + [3]))) + [0] + (x-[4])*[5] + log(abs(sin(([6] * (x-[4])) + [3])))";
+    else if (option == "tail")
+         return "[0]/(x*x) + [1]";
+    else
+        return "[0]";
 }
 
 void quasiNormalModes(string filename, string details, string type, int rows, int columns, double rStar, double dt, double drStar) {
     int position = (rStar + rStarMax)/drStar;
     string command, output, title;
-    vector<double> timeVector(rows, 0.00), waveVector(rows, 0.00);
-    vector<vector<double>> psi(rows, vector<double> (columns, 0.00));
+    vector<double> timeVector, waveVector;
+    vector<vector<double>> psi;
     fileToMatrix(filename, psi, rows, columns);
 
     title = "Evolution of the Wave Function at r* = " + to_string(rStar);
-    output = "quasiNormalModes/file.jpg";
     command = "open " + output;
 
-    if (position < 0 || position >= rows) {
+    if (position < 0 || position >= columns) {
         cout << "Position out of limits. No output." << endl;
         return;
     }
 
-    ofstream file("quasiNormalModes/file_" + details + "_" + type + ".csv");
-    for (int i = 0; i < rows; i++) {
+    ofstream file("quasinormalmodes/file_" + to_string(rows) + "_" + to_string(columns) + "_" + details + "_" + type + ".csv");
+    file << scientific << setprecision(15);
+    for (int i = 0; i < psi.size(); i++) {
         if (type == "normal") {
-            timeVector[i] = i * dt;
-            waveVector[i] = psi[i][position];
-            file << timeVector[i] << "," << waveVector[i] << endl;        
+            timeVector.push_back(i * dt);
+            waveVector.push_back(psi[i][position]);
+            file << timeVector[i] << "," << waveVector[i] << endl;
+             
         }
         else if (type == "log") {
-            if (i * dt > tolVal) {
-                timeVector[i] = log(abs(i * dt));
-                waveVector[i] = log(abs(psi[i][position]));
-            }
+            timeVector.push_back(i * dt);
+            waveVector.push_back(log(abs(psi[i][position])));
             file << timeVector[i] << "," << waveVector[i] << endl;
         }
     }
     file.close();
 }
 
-void quasiNormalModesFit(string filename, string details, string type, int size, double rStar, double tMin, double tMax, double psiMin, double psiMax) {
+void quasiNormalModesFit(string filename, string details, string type, int size, int columns, double rStar, double tMin, double tMax, double psiMin, double psiMax, bool scale, string option) {
     gErrorIgnoreLevel = kError;
     double peakTime = 0, peakSpace = 0;
     string command, output, title;
-    vector<double> timeVector(size, 0.00), waveVector(size, 0.00);
-    vector<vector<double>> psi(size, vector<double> (2, 0.00));
+    vector<double> timeVector, waveVector;
+    vector<vector<double>> psi;
     fileToMatrix(filename, psi, size, 2);
 
-    for (int i = 0; i < size; i++) {
-        timeVector[i] = psi[i][0];
-        waveVector[i] = psi[i][1];
-        if (abs(waveVector[i]) > peakSpace) {
+    for (int i = 0; i < psi.size(); i++) {
+        timeVector.push_back(psi[i][0]);
+        waveVector.push_back(psi[i][1]);
+        if (waveVector[i] > peakSpace) {
             peakTime = timeVector[i];
             peakSpace = waveVector[i];
         }
     }
 
     title = "Evolution of the Wave Function at r* = " + to_string(rStar);
-    output = "quasiNormalModes/file_" + details  + "_" + type + ".jpg";
+    output = "quasinormalmodes/file_" + to_string(size) + "_" + to_string(columns) + "_" + details  + "_" + type + ".jpg";
     command = "open " + output;
 
     TCanvas* c = new TCanvas("c", "Canvas", 2500, 1500);
-    TF1* f = new TF1("f", dampedExponential(peakTime).c_str(), timeVector[0], timeVector[timeVector.size()-1]);
+    TF1* f = new TF1("f", dampedExponential(peakTime, option).c_str(), timeVector[0], timeVector[timeVector.size()-1]);
     TGraph* g = new TGraph(psi.size(), timeVector.data(), waveVector.data());
 
     c-> SetGrid();
     g-> SetTitle(title.c_str());
+    f-> SetNpx(10000);
     if (type == "normal") {
         g-> GetXaxis()-> SetTitle("Time");
         g-> GetYaxis()-> SetTitle("Wave Function Value");
     }
     else if (type == "log") {
-        g-> GetXaxis()-> SetTitle("Log(Time)");
+        g-> GetXaxis()-> SetTitle("Time");
         g-> GetYaxis()-> SetTitle("Log |Wave Function Value|");
     }
 
-    //g-> GetXaxis()-> SetRangeUser(tMin, tMax);
-    //g-> GetYaxis()-> SetRangeUser(psiMin, psiMax);
+    if (scale) {
+        g-> GetXaxis()-> SetRangeUser(tMin, tMax);
+        g-> GetYaxis()-> SetRangeUser(psiMin, psiMax);
+    }
 
-    f-> SetParLimits(0, peakSpace-0.001, peakSpace+0.001);
-    f-> SetParLimits(1, 0.00, 500.00);
-    f-> SetParLimits(2, 0.00, 1.00);
-    f-> SetParLimits(3, -M_PI, M_PI);
+    if (option == "mode") {
+        f-> SetParLimits(0, peakSpace - 0.001, peakSpace + 0.001);
+        f-> SetParLimits(3, -M_PI, M_PI);
+        f-> SetParLimits(4, peakTime - 0.001, peakTime + 0.001);
+        //f-> SetParLimits(1, -0.009, -0.005);
+        f-> SetParLimits(2, 0.060, 0.070);
+        //f-> SetParameters(peakSpace, -0.007, 0.065, 0.000, peakTime);
+    }
 
-    f-> SetParameters(peakSpace, 175.00, (2 * M_PI)/300, 0.00);
+    else if (option == "modes"){
+        f-> SetParLimits(0, peakSpace - 0.001, peakSpace + 0.001);
+        f-> SetParLimits(3, -M_PI, M_PI);
+        f-> SetParLimits(4, peakTime - 0.001, peakTime + 0.001);
+        f-> SetParLimits(1, -0.009, -0.005);
+        f-> SetParLimits(2, 0.060, 0.070);
+        f-> SetParLimits(5, -0.009, -0.005);
+        f-> SetParLimits(6, 0.060, 0.070);
+        f-> SetParameters(peakSpace, -0.007, 0.065, 0.000, peakTime, -0.007, 0.065);
+    }
+
+    else if (option == "tail") {
+        f-> SetParLimits(0, 0, 1e10);
+        f-> SetParLimits(1, -100, 100);
+    }
+
+    else
+        cout << "None" << endl;
 
     g-> GetYaxis()-> SetDecimals(kTRUE);
     g-> SetLineColor(kBlack);
     g-> SetLineWidth(5);
-    g-> Fit(f, "Q", "R", peakTime, 750);
+    g-> Fit(f, "", "R", peakTime, 605);
     g-> Draw("AL");
-    gStyle-> SetFitFormat(".5g");
-    gStyle-> SetOptFit(111);
     c-> SaveAs(output.c_str());
     delete f;
     delete g;
@@ -348,15 +365,15 @@ int main() {
          getQuasiNormalModes = false,
          getQuasiNormalModesFit = false;
 
-    int l = 4, pointsTime = 5000, pointsSpace = 4000;
-    double norm = 100.0, mu = 500.00, sigma = 0.25 * 0.50 * rStarMax;
+    int l = 4, pointsTime = 10000, pointsSpace = 32000;
+    double norm = 100.0, mu = 100.00, sigma = 25.00;
     double dt, drStar;
 
     if (getSample) {
         vector<vector<double>> psi(pointsTime, vector<double>(pointsSpace, 0.00));
         string details = "l_" + to_string(l) + "_norm_" + to_string(norm) + "_mu_" + to_string(mu) + "_sigma_" + to_string(sigma);
 
-        drStar = (2 * rStarMax)/(psi[0].size() - 1), dt = cfl * drStar;
+        drStar = (2 * rStarMax)/(psi[0].size() + 1), dt = cfl * drStar;
         initializeVals(psi, dt, drStar, norm, mu, sigma);
         solvePDE(psi, dt, drStar, l);
         saveData(psi, details, dt, drStar);
@@ -366,9 +383,9 @@ int main() {
         vector<vector<double>> psiQuarter(pointsTime, vector<double>(pointsSpace/4, 0.00));
         vector<vector<double>> psiHalf(pointsTime, vector<double>(pointsSpace/2, 0.00));
         vector<vector<double>> psiMain(pointsTime, vector<double>(pointsSpace, 0.00));
-        string details = "";
+        string details = "convergence";
 
-        drStar = (2 * rStarMax)/(psiMain[0].size()), dt = cfl * drStar;
+        drStar = (2 * rStarMax)/(psiMain[0].size() + 1), dt = cfl * drStar;
         initializeVals(psiMain, dt, drStar, norm, mu, sigma);
         solvePDE(psiMain, dt, drStar, l);
         saveData(psiMain, details, dt, drStar);
@@ -385,25 +402,25 @@ int main() {
     }
 
     if (getConvergenceTest) {
-        double drStarQuarter = (2 * rStarMax)/(pointsSpace/4);
+        double drStarQuarter = (2 * rStarMax)/((pointsSpace + 1)/4);
         double time = 500.00;
         int rows = pointsTime, columnsQuarter = pointsSpace/4;
-        string fileQuarter = "bin/data_5000_1000_.csv", fileHalf = "bin/data_5000_2000_.csv", fileMain = "bin/data_5000_4000_.csv", type = "log";
+        string fileQuarter = "bin/data_" + to_string(pointsTime) + "_" + to_string(pointsSpace/4) + "_convergence.csv", fileHalf = "bin/data_" + to_string(pointsTime) + "_" + to_string(pointsSpace/2) + "_convergence.csv", fileMain = "bin/data_" + to_string(pointsTime) + "_" + to_string(pointsSpace) + "_convergence.csv", type = "log";
         convergenceTest(drStarQuarter, fileMain, fileHalf, fileQuarter, type, time, rows, columnsQuarter);
     }
 
     if (getQuasiNormalModes) {
-        double rStar = 50.00, tMin = 6.00, tMax = 10.00, psiMin = -20.00, psiMax = 10.00;
-        string details = "l_" + to_string(l) + "_norm_" + to_string(norm) + "_mu_" + to_string(mu) + "_sigma_" + to_string(sigma), type = "normal", filename = "bin/data_5000_4000_" + details + ".csv";
-        drStar = (2 * rStarMax)/(pointsSpace - 1), dt = cfl * drStar;
+        double rStar = 500.00;
+        string details = "l_" + to_string(l) + "_norm_" + to_string(norm) + "_mu_" + to_string(mu) + "_sigma_" + to_string(sigma), type = "log", filename = "bin/data_" + to_string(pointsTime) + "_" + to_string(pointsSpace) + "_" + details + ".csv";
+        drStar = (2 * rStarMax)/(pointsSpace + 1), dt = cfl * drStar;
         quasiNormalModes(filename, details, type, pointsTime, pointsSpace, rStar, dt, drStar);
     }
 
     if (getQuasiNormalModesFit) {
-        double rStar = 50.00, tMin = 6.00, tMax = 10.00, psiMin = -20.00, psiMax = 10.00;
-        int size = pointsTime;
-        string details = "l_" + to_string(l) + "_norm_" + to_string(norm) + "_mu_" + to_string(mu) + "_sigma_" + to_string(sigma), type = "normal", filename = "quasiNormalModes/file_" + details + "_" + type + ".csv";
-        quasiNormalModesFit(filename, details, type, size, rStar, tMin, tMax, psiMin, psiMax);
+        bool scale = true;
+        double rStar = 500.00, tMin = 250.00, tMax = 850.00, psiMin = -15.00, psiMax = 15.00;
+        string details = "l_" + to_string(l) + "_norm_" + to_string(norm) + "_mu_" + to_string(mu) + "_sigma_" + to_string(sigma), option = "mode", type = "log", filename = "quasinormalmodes/file_" + to_string(pointsTime) + "_" + to_string(pointsSpace) + "_" + details + "_" + type + ".csv";
+        quasiNormalModesFit(filename, details, type, pointsTime, pointsSpace, rStar, tMin, tMax, psiMin, psiMax, scale, option);
     }
 
     return 0;
